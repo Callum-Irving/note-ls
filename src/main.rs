@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::OsStr, path::PathBuf};
 
 use tokio::sync::Mutex;
 use tower_lsp::{
@@ -12,6 +12,7 @@ use tower_lsp::{
     },
     Client, LanguageServer, LspService, Server,
 };
+use walkdir::WalkDir;
 
 /// Get the word in `document` at position `cursor_pos`. Cut off word at cursor
 /// position.
@@ -41,21 +42,21 @@ fn get_current_word(document: &str, cursor_pos: Position) -> Option<&str> {
 }
 
 struct Files {
-    files: HashMap<Url, String>,
+    files: HashMap<Url, File>,
 }
 
 impl Files {
     /// Add new file
-    pub fn add_file(&mut self, uri: Url, content: String) {
+    pub fn add_file(&mut self, uri: Url, content: File) {
         self.files.insert(uri, content);
     }
 
     /// Find file with matching uri.
-    pub fn get_file_mut(&mut self, uri: &Url) -> Option<&mut String> {
+    pub fn get_file_mut(&mut self, uri: &Url) -> Option<&mut File> {
         self.files.get_mut(uri)
     }
 
-    pub fn get_file(&self, uri: &Url) -> Option<&String> {
+    pub fn get_file(&self, uri: &Url) -> Option<&File> {
         self.files.get(uri)
     }
 
@@ -65,11 +66,19 @@ impl Files {
 }
 
 struct File {
-    uri: Url,
-    text: String,
+    content: String,
 }
 
 impl File {
+    pub fn new(content: String) -> Self {
+        Self { content }
+    }
+
+    /// Overwrite current content with `new_content`.
+    pub fn overwrite(&mut self, new_content: String) {
+        self.content = new_content;
+    }
+
     pub fn update(&mut self, changes: Vec<TextDocumentContentChangeEvent>) {
         todo!("implement incremental document synchronization")
     }
@@ -79,6 +88,7 @@ impl File {
 struct MarkdownLanguageServer {
     client: Client,
     files: Mutex<Files>,
+    current_file: Mutex<Option<Url>>,
 }
 
 impl MarkdownLanguageServer {
@@ -88,6 +98,7 @@ impl MarkdownLanguageServer {
             files: Mutex::new(Files {
                 files: HashMap::new(),
             }),
+            current_file: Mutex::new(None),
         }
     }
 }
@@ -125,7 +136,13 @@ impl LanguageServer for MarkdownLanguageServer {
 
     async fn did_open(&self, request: DidOpenTextDocumentParams) {
         let mut state = self.files.lock().await;
-        state.add_file(request.text_document.uri, request.text_document.text);
+        state.add_file(
+            request.text_document.uri.clone(),
+            File::new(request.text_document.text),
+        );
+
+        let mut current_file = self.current_file.lock().await;
+        *current_file = Some(request.text_document.uri);
 
         // TODO: Open preview in browser
     }
@@ -137,7 +154,10 @@ impl LanguageServer for MarkdownLanguageServer {
         let Some(file) = state.get_file_mut(&request.text_document.uri) else { return; };
         let last_index = request.content_changes.len() - 1;
         let new_content = request.content_changes.swap_remove(last_index).text;
-        *file = new_content;
+        file.overwrite(new_content);
+
+        let mut current_file = self.current_file.lock().await;
+        *current_file = Some(request.text_document.uri);
     }
 
     async fn did_close(&self, request: DidCloseTextDocumentParams) {
@@ -152,11 +172,11 @@ impl LanguageServer for MarkdownLanguageServer {
         let state = self.files.lock().await;
         let file = state
             .get_file(&request.text_document_position.text_document.uri)
-            .ok_or(Error::new(ErrorCode::ParseError))?;
+            .ok_or(Error::new(ErrorCode::InvalidParams))?;
         let pos = request.text_document_position.position;
 
         let current_word =
-            get_current_word(file, pos).ok_or(Error::new(ErrorCode::InvalidParams))?;
+            get_current_word(&file.content, pos).ok_or(Error::new(ErrorCode::InvalidParams))?;
 
         self.client
             .log_message(MessageType::INFO, format!("Current word: {}", current_word))
@@ -164,16 +184,33 @@ impl LanguageServer for MarkdownLanguageServer {
 
         if current_word.starts_with("[[") && !current_word.ends_with(']') {
             // Get all files in currrent dir or nested dirs that end with .md other than self.
+            let current_path = self
+                .current_file
+                .lock()
+                .await
+                .clone()
+                .ok_or(Error::new(ErrorCode::InternalError))?;
+            let path = PathBuf::from(current_path.path());
+            let files = WalkDir::new(path.parent().unwrap())
+                .sort_by(|a, b| a.depth().cmp(&b.depth())) // Not working
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension() == Some(OsStr::new("md")))
+                .map(|e| {
+                    CompletionItem::new_simple(
+                        e.path()
+                            .strip_prefix(path.parent().unwrap())
+                            .unwrap()
+                            .to_string_lossy()
+                            .into(),
+                        "".to_string(),
+                    )
+                })
+                .collect::<Vec<CompletionItem>>();
 
             Ok(Some(CompletionResponse::List(CompletionList {
                 is_incomplete: false,
-                items: vec![
-                    CompletionItem::new_simple("file 1".to_string(), "some detail".to_string()),
-                    CompletionItem::new_simple(
-                        "file other".to_string(),
-                        "other detail".to_string(),
-                    ),
-                ],
+                items: files,
             })))
         } else {
             Ok(None)
