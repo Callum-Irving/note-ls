@@ -4,11 +4,12 @@ use tokio::sync::Mutex;
 use tower_lsp::{
     jsonrpc::{Error, ErrorCode, Result},
     lsp_types::{
-        CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
-        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        InitializeParams, InitializeResult, InitializedParams, MessageType, Position,
-        ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
-        TextDocumentSyncKind, Url, WorkDoneProgressOptions,
+        CompletionItem, CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
+        CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+        DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, InitializeParams,
+        InitializeResult, InitializedParams, MessageType, Position, ServerCapabilities,
+        TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+        WorkDoneProgressOptions,
     },
     Client, LanguageServer, LspService, Server,
 };
@@ -65,6 +66,7 @@ impl Files {
     }
 }
 
+#[derive(Clone)]
 struct File {
     content: String,
 }
@@ -89,23 +91,46 @@ struct MarkdownLanguageServer {
     client: Client,
     files: Mutex<Files>,
     current_file: Mutex<Option<Url>>,
+    preview_server: Mutex<aurelius::Server>,
 }
 
 impl MarkdownLanguageServer {
     pub fn new(client: Client) -> Self {
+        let preview_server =
+            aurelius::Server::bind("localhost:0").expect("Couldn't start preview server");
+
         Self {
             client,
             files: Mutex::new(Files {
                 files: HashMap::new(),
             }),
             current_file: Mutex::new(None),
+            preview_server: Mutex::new(preview_server),
         }
+    }
+
+    pub async fn get_current_file_contents(&self) -> Option<File> {
+        let current_file = self.current_file.lock().await;
+        let c2 = current_file.clone()?;
+        let lock = self.files.lock().await;
+        let c = lock.get_file(&c2)?;
+        let thing = c.clone();
+        Some(thing)
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for MarkdownLanguageServer {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+        // TODO: Client must support goto definition link
+
+        // Open preview in browser
+        self.preview_server
+            .lock()
+            .await
+            .open_browser()
+            .map_err(|_| Error::new(ErrorCode::InternalError))?;
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -138,13 +163,18 @@ impl LanguageServer for MarkdownLanguageServer {
         let mut state = self.files.lock().await;
         state.add_file(
             request.text_document.uri.clone(),
-            File::new(request.text_document.text),
+            File::new(request.text_document.text.clone()),
         );
 
         let mut current_file = self.current_file.lock().await;
         *current_file = Some(request.text_document.uri);
 
         // TODO: Open preview in browser
+        self.preview_server
+            .lock()
+            .await
+            .send(request.text_document.text)
+            .expect("Couldn't send preview to server");
     }
 
     async fn did_change(&self, mut request: DidChangeTextDocumentParams) {
@@ -154,10 +184,17 @@ impl LanguageServer for MarkdownLanguageServer {
         let Some(file) = state.get_file_mut(&request.text_document.uri) else { return; };
         let last_index = request.content_changes.len() - 1;
         let new_content = request.content_changes.swap_remove(last_index).text;
-        file.overwrite(new_content);
+        file.overwrite(new_content.clone());
 
         let mut current_file = self.current_file.lock().await;
         *current_file = Some(request.text_document.uri);
+
+        // Update preview in browser
+        self.preview_server
+            .lock()
+            .await
+            .send(new_content)
+            .expect("Couldn't send preview to server");
     }
 
     async fn did_close(&self, request: DidCloseTextDocumentParams) {
@@ -165,8 +202,10 @@ impl LanguageServer for MarkdownLanguageServer {
         state.remove_file(&request.text_document.uri);
 
         // TODO: Close preview in browser
+        // Maybe switch to current document instead?
     }
 
+    // TODO: Filter files as user types more characters.
     async fn completion(&self, request: CompletionParams) -> Result<Option<CompletionResponse>> {
         // Get current location in file
         let state = self.files.lock().await;
@@ -191,20 +230,22 @@ impl LanguageServer for MarkdownLanguageServer {
                 .clone()
                 .ok_or(Error::new(ErrorCode::InternalError))?;
             let path = PathBuf::from(current_path.path());
-            let files = WalkDir::new(path.parent().unwrap())
+            let path_parent = path.parent().ok_or(Error::new(ErrorCode::InternalError))?;
+
+            let files = WalkDir::new(path_parent)
                 .sort_by(|a, b| a.depth().cmp(&b.depth())) // Not working
                 .into_iter()
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().extension() == Some(OsStr::new("md")))
-                .map(|e| {
-                    CompletionItem::new_simple(
-                        e.path()
-                            .strip_prefix(path.parent().unwrap())
-                            .unwrap()
-                            .to_string_lossy()
-                            .into(),
-                        "".to_string(),
-                    )
+                .map(|e| CompletionItem {
+                    label: e
+                        .path()
+                        .strip_prefix(path_parent)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into(),
+                    kind: Some(CompletionItemKind::FILE),
+                    ..CompletionItem::default()
                 })
                 .collect::<Vec<CompletionItem>>();
 
@@ -215,6 +256,13 @@ impl LanguageServer for MarkdownLanguageServer {
         } else {
             Ok(None)
         }
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        todo!()
     }
 }
 
