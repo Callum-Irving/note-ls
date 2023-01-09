@@ -125,9 +125,9 @@ impl LanguageServer for MarkdownLanguageServer {
         // TODO: Client must support goto definition link
 
         // Open preview in browser
-        self.preview_server
-            .lock()
-            .await
+        let mut preview_server = self.preview_server.lock().await;
+        preview_server.set_highlight_theme("github".to_string());
+        preview_server
             .open_browser()
             .map_err(|_| Error::new(ErrorCode::InternalError))?;
 
