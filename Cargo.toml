@@ -1,13 +1,6 @@
-[package]
-name = "mdls"
-version = "0.1.0"
-edition = "2021"
+[workspace]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-# aurelius = "0.7.5"
-aurelius = { path = "../aurelius" }
-tower-lsp = "0.17.0"
-tokio = { version = "1.23.0", features = ["full"] }
-walkdir = "2"
+members = [
+  "language-server",
+  "aurelius"
+]

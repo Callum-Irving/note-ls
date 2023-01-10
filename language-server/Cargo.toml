@@ -1,0 +1,15 @@
+[package]
+name = "language-server"
+version = "0.1.0"
+edition = "2021"
+default-run = "note-ls"
+
+[[bin]]
+name = "note-ls"
+path = "src/main.rs"
+
+[dependencies]
+aurelius = { path = "../aurelius" }
+tower-lsp = "0.17.0"
+tokio = { version = "1.23.0", features = ["full"] }
+walkdir = "2"
