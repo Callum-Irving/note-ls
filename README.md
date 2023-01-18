@@ -2,6 +2,8 @@
 
 ## TODO:
 
+- [ ] Add ability to turn off the preview (settings option)
+- [ ] Use MD4C parser to fix latex rendering
 - [ ] Add ability to install using `cargo install`
 - [ ] Clean up code
 - [ ] Add goto definition support

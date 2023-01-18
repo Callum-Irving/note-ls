@@ -18,10 +18,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function renderMath() {
       if (typeof renderMathInElement === 'function') {
+        let equations = document.getElementsByTagName("x-equation");
+        for (let equation of equations) {
+            if (equation.type === "display") {
+                equation.innerHTML = "$$" + equation.innerHTML + "$$";
+            } else {
+                equation.innerHTML = "$" + equation.innerHTML + "$";
+            }
+        }
+            
         renderMathInElement(
             document.getElementById("markdown-preview"),
             {
                 delimiters: [
+                    // {left: "\\begin{align*}", right: "\\end{align*}", display: true},
                     {left: "$$", right: "$$", display: true},
                     {left: "\\[", right: "\\]", display: true},
                     {left: "$", right: "$", display: false},

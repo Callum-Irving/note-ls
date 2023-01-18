@@ -37,7 +37,7 @@
 //!
 //! [vim-markdown-composer]: https://github.com/euclio/vim-markdown-composer
 
-#![warn(missing_debug_implementations)]
+// #![warn(missing_debug_implementations)]
 #![warn(missing_docs)]
 
 use std::error::Error;
@@ -77,11 +77,11 @@ const STATIC_FILES: Dir = include_dir!("static");
 ///
 /// Listens for HTTP connections and serves a page containing a live markdown preview. The page
 /// contains JavaScript to open a websocket connection back to the server for rendering updates.
-#[derive(Debug)]
+//#[derive(Debug)]
 pub struct Server {
     addr: SocketAddr,
     config: Arc<Mutex<Config>>,
-    external_renderer: Option<Command>,
+    external_renderer: Option<fn(&str) -> io::Result<String>>,
     md_clients: Arc<Mutex<IdMap<Sender<Signal>>>>,
     html: Arc<RwLock<Option<String>>>,
     /// Indicates whether the server should initiate shutdown.
@@ -149,7 +149,10 @@ impl Server {
                                 Some(e) if e.raw_os_error() == Some(41) => (),
                                 Some(e)
                                     if e.kind() == io::ErrorKind::ConnectionReset
-                                        || e.kind() == io::ErrorKind::BrokenPipe => (),
+                                        || e.kind() == io::ErrorKind::BrokenPipe =>
+                                {
+                                    ()
+                                }
                                 _ => panic!("unexpected error occurred: {}", e),
                             }
                         }
@@ -184,15 +187,8 @@ impl Server {
     /// This method forwards errors from an external renderer, if set. Otherwise, the method is
     /// infallible.
     pub fn send(&mut self, markdown: String) -> io::Result<()> {
-        let html = if let Some(renderer) = &mut self.external_renderer {
-            let child = renderer.spawn()?;
-
-            child.stdin.unwrap().write_all(markdown.as_bytes())?;
-
-            let mut html = String::with_capacity(markdown.len());
-            child.stdout.unwrap().read_to_string(&mut html)?;
-
-            html
+        let html = if let Some(render_func) = self.external_renderer {
+            render_func(&markdown)?
         } else {
             let mut html = String::with_capacity(markdown.len());
             let parser = Parser::new_ext(
@@ -207,6 +203,31 @@ impl Server {
 
             html
         };
+
+        // let html = if let Some(renderer) = &mut self.external_renderer {
+        //     let child = renderer.spawn()?;
+
+        //     // NOTE: Maybe add explicit flush
+        //     child.stdin.unwrap().write_all(markdown.as_bytes())?;
+
+        //     let mut html = String::with_capacity(markdown.len());
+        //     child.stdout.unwrap().read_to_string(&mut html)?;
+
+        //     html
+        // } else {
+        //     let mut html = String::with_capacity(markdown.len());
+        //     let parser = Parser::new_ext(
+        //         &markdown,
+        //         Options::ENABLE_FOOTNOTES
+        //             | Options::ENABLE_TABLES
+        //             | Options::ENABLE_STRIKETHROUGH
+        //             | Options::ENABLE_TASKLISTS,
+        //     );
+
+        //     pulldown_cmark::html::push_html(&mut html, parser);
+
+        //     html
+        // };
 
         *self.html.write().unwrap() = Some(html);
 
@@ -293,12 +314,13 @@ impl Server {
     /// [`pulldown_cmark`]: https://github.com/raphlinus/pulldown-cmark
     /// [CommonMark]: https://commonmark.org/
     /// [`pandoc`]: https://pandoc.org/
-    pub fn set_external_renderer(&mut self, mut command: Command) {
-        command.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        self.external_renderer = Some(command);
-    }
+    //pub fn set_external_renderer(&mut self, mut command: Command) {
+    //    command
+    //        .stdin(Stdio::piped())
+    //        .stdout(Stdio::piped())
+    //        .stderr(Stdio::null());
+    //    self.external_renderer = Some(command);
+    //}
 
     /// Opens the user's default browser with the server's URL in the background.
     ///

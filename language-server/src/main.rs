@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsStr, path::PathBuf};
+use std::{collections::HashMap, ffi::OsStr, path::PathBuf, process::Command};
 
 use tokio::sync::Mutex;
 use tower_lsp::{
@@ -96,8 +96,13 @@ struct MarkdownLanguageServer {
 
 impl MarkdownLanguageServer {
     pub fn new(client: Client) -> Self {
-        let preview_server =
+        let mut preview_server =
             aurelius::Server::bind("localhost:0").expect("Couldn't start preview server");
+
+        // Use MD4C as rendered
+        let mut md2html = Command::new("/home/callum/Projects/note-ls/md4c/md2html/md2html");
+        md2html.arg("--flatex-math");
+        preview_server.set_external_renderer(md2html);
 
         Self {
             client,
